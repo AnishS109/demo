@@ -1,0 +1,39 @@
+INSTALLATION STEPS:
+
+brew install openjdk@17
+
+
+brew install --cask android-commandlinetools
+
+
+cat >> ~/.zshrc <<'EOF'
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
+export PATH="$JAVA_HOME/bin:$PATH:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin"
+EOF
+source ~/.zshrc
+java -version
+
+
+sdkmanager --licenses
+sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+
+
+./gradlew assembleDebug
+
+
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+
+adb shell am start -n com.android.healthconnect.phone.je584bcf40a9b367d94eff78dae6fc17b/.MainActivity
+
+
+____________________________________________________________________________________________________
+
+RUNNING commandlinetools
+
+./gradlew assembleDebug
+
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+adb shell am start -n com.android.healthconnect.phone.je584bcf40a9b367d94eff78dae6fc17b/.MainActivity

@@ -1,6 +1,7 @@
 
 package com.android.healthconnect.phone.je584bcf40a9b367d94eff78dae6fc17b
 
+import android.app.DatePickerDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -43,16 +44,22 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var statusView: TextView
     private lateinit var totalView: TextView
+    private lateinit var dateInput: EditText
     private lateinit var stepsInput: EditText
     private lateinit var startTimeInput: EditText
     private lateinit var endTimeInput: EditText
 
+    // Selected date (default: today)
+    private var selectedDate: LocalDate = LocalDate.now()
+
+    private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
     private val secondsFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
     private val permissionLauncher = registerForActivityResult(
         PermissionController.createRequestPermissionResultContract()
     ) { granted ->
+
         if (granted.containsAll(permissions)) {
             setStatus("Health Connect permissions granted")
             refreshTotal()
@@ -63,7 +70,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        selectedDate = LocalDate.now()
+
         setContentView(buildUi())
+
         initHealthConnect()
     }
 
@@ -91,8 +102,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         totalView = TextView(this).apply {
-            text = "Today's steps: -"
+            text = "Selected date steps: -"
             textSize = 20f
+        }
+
+        // Date selection input
+        dateInput = EditText(this).apply {
+            hint = "Select date"
+            inputType = InputType.TYPE_NULL
+            isFocusable = false
+            isClickable = true
+            setText(selectedDate.format(dateFormatter))
+
+            setOnClickListener {
+                showDatePicker()
+            }
         }
 
         stepsInput = EditText(this).apply {
@@ -114,32 +138,43 @@ class MainActivity : AppCompatActivity() {
 
         val permissionButton = Button(this).apply {
             text = "1. Request permission"
-            setOnClickListener { requestPermissions() }
+            setOnClickListener {
+                requestPermissions()
+            }
         }
 
         val writeButton = Button(this).apply {
             text = "2. Add steps automatically"
-            setOnClickListener { writeStepsAutomatically() }
+            setOnClickListener {
+                writeStepsAutomatically()
+            }
         }
 
         val readButton = Button(this).apply {
-            text = "3. Refresh today's total"
-            setOnClickListener { refreshTotal() }
+            text = "3. Refresh selected date total"
+            setOnClickListener {
+                refreshTotal()
+            }
         }
 
         val recordsButton = Button(this).apply {
-            text = "4. View today's records"
-            setOnClickListener { fetchTodayStepRecords() }
+            text = "4. View selected date records"
+            setOnClickListener {
+                fetchSelectedDateStepRecords()
+            }
         }
 
         val deleteButton = Button(this).apply {
-            text = "5. Delete today's app records"
-            setOnClickListener { deleteMySteps() }
+            text = "5. Delete selected date app records"
+            setOnClickListener {
+                deleteMySteps()
+            }
         }
 
         listOf(
             statusView,
             totalView,
+            dateInput,
             stepsInput,
             startTimeInput,
             endTimeInput,
@@ -148,9 +183,64 @@ class MainActivity : AppCompatActivity() {
             readButton,
             recordsButton,
             deleteButton
-        ).forEach { root.addView(it) }
+        ).forEach {
+            root.addView(it)
+        }
 
         return root
+    }
+
+    // ---------------------------------------------------------
+    // DATE PICKER
+    // ---------------------------------------------------------
+
+    private fun showDatePicker() {
+
+        val today = LocalDate.now()
+        val zone = ZoneId.systemDefault()
+
+        val datePicker = DatePickerDialog(
+            this,
+            { _, year, month, day ->
+
+                val chosenDate = LocalDate.of(
+                    year,
+                    month + 1,
+                    day
+                )
+
+                // Future-date validation
+                if (chosenDate.isAfter(LocalDate.now())) {
+                    setStatus("Future dates are not allowed")
+                    return@DatePickerDialog
+                }
+
+                selectedDate = chosenDate
+
+                dateInput.setText(
+                    selectedDate.format(dateFormatter)
+                )
+
+                setStatus(
+                    "Selected date: ${selectedDate.format(dateFormatter)}"
+                )
+
+                // Refresh total for the selected date
+                refreshTotal()
+            },
+            selectedDate.year,
+            selectedDate.monthValue - 1,
+            selectedDate.dayOfMonth
+        )
+
+        // Prevent selecting future dates in the calendar
+        datePicker.datePicker.maxDate = today
+            .plusDays(1)
+            .atStartOfDay(zone)
+            .toInstant()
+            .toEpochMilli() - 1
+
+        datePicker.show()
     }
 
     // ---------------------------------------------------------
@@ -178,6 +268,7 @@ class MainActivity : AppCompatActivity() {
 
                 lifecycleScope.launch {
                     try {
+
                         val granted =
                             client!!.permissionController.getGrantedPermissions()
 
@@ -206,13 +297,33 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------
-    // GET TODAY'S RECORDS
+    // GET SELECTED DATE RECORDS
     // ---------------------------------------------------------
 
-    private suspend fun getTodayStepRecords(): List<StepsRecord> {
+    private fun startOfDate(date: LocalDate): Instant {
+
+        return date.atStartOfDay(ZoneId.systemDefault()).toInstant()
+    }
+
+    private fun endOfSelectedDate(date: LocalDate): Instant {
+
+        val endOfDay = date
+            .plusDays(1)
+            .atStartOfDay(ZoneId.systemDefault())
+            .toInstant()
+
+        // For current date, read only up to the current time.
+        return minOf(endOfDay, Instant.now())
+    }
+
+    private suspend fun getSelectedDateStepRecords(): List<StepsRecord> {
 
         val hc = client ?: return emptyList()
+
+        val date = selectedDate
+
         val allRecords = mutableListOf<StepsRecord>()
+
         var pageToken: String? = null
 
         do {
@@ -220,15 +331,17 @@ class MainActivity : AppCompatActivity() {
             val request = ReadRecordsRequest(
                 recordType = StepsRecord::class,
                 timeRangeFilter = TimeRangeFilter.between(
-                    startOfToday(),
-                    Instant.now()
+                    startOfDate(date),
+                    endOfSelectedDate(date)
                 ),
                 pageSize = 1000,
                 pageToken = pageToken
             )
 
             val response = hc.readRecords(request)
+
             allRecords.addAll(response.records)
+
             pageToken = response.pageToken
 
         } while (pageToken != null)
@@ -237,10 +350,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------
-    // VIEW TODAY'S RECORDS
+    // VIEW SELECTED DATE RECORDS
     // ---------------------------------------------------------
 
-    private fun fetchTodayStepRecords() {
+    private fun fetchSelectedDateStepRecords() {
 
         val hc = client ?: return setStatus("Health Connect unavailable")
 
@@ -248,10 +361,10 @@ class MainActivity : AppCompatActivity() {
 
             try {
 
-                val records = getTodayStepRecords()
+                val records = getSelectedDateStepRecords()
 
                 if (records.isEmpty()) {
-                    setStatus("No step records found today")
+                    setStatus("No step records found for selected date")
                     return@launch
                 }
 
@@ -276,7 +389,9 @@ class MainActivity : AppCompatActivity() {
                         """.trimIndent()
                     }
 
-                setStatus("Today's records:\n\n$details")
+                setStatus(
+                    "Records for ${selectedDate.format(dateFormatter)}:\n\n$details"
+                )
 
             } catch (e: Exception) {
                 setStatus("Read records failed: ${e.message}")
@@ -300,13 +415,11 @@ class MainActivity : AppCompatActivity() {
             return emptyList()
         }
 
-        // Generate a variable number of sessions based on interval length.
         val sessionCount = Random.nextInt(
             5,
             minOf(16, (totalDuration / 45).toInt() + 1).coerceAtLeast(6)
         )
 
-        // Session durations and rest gaps are simulated.
         val sessionDurations = MutableList(sessionCount) {
             Random.nextLong(30, 181)
         }
@@ -315,9 +428,11 @@ class MainActivity : AppCompatActivity() {
             Random.nextLong(10, 91)
         }
 
-        val requiredDuration = sessionDurations.sum() + gapDurations.sum()
+        val requiredDuration =
+            sessionDurations.sum() + gapDurations.sum()
 
         if (requiredDuration > totalDuration) {
+
             val scale = totalDuration.toDouble() / requiredDuration.toDouble()
 
             for (i in sessionDurations.indices) {
@@ -331,18 +446,23 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val actualDuration = sessionDurations.sum() + gapDurations.sum()
-        val remainingDuration = (totalDuration - actualDuration).coerceAtLeast(0)
+        val actualDuration =
+            sessionDurations.sum() + gapDurations.sum()
 
-        // Spread extra time across gaps rather than creating one continuous record.
+        val remainingDuration =
+            (totalDuration - actualDuration).coerceAtLeast(0)
+
         if (gapDurations.isNotEmpty()) {
+
             val extraPerGap = remainingDuration / gapDurations.size
+
             gapDurations.indices.forEach {
                 gapDurations[it] += extraPerGap
             }
         }
 
         val sessions = mutableListOf<Pair<Instant, Instant>>()
+
         var cursor = start
 
         for (i in 0 until sessionCount) {
@@ -365,20 +485,24 @@ class MainActivity : AppCompatActivity() {
             return listOf(Triple(start, end, totalSteps))
         }
 
-        // Allocate steps across sessions, with the exact remainder in the last.
         val weights = sessions.map {
             ChronoUnit.SECONDS.between(it.first, it.second).toDouble()
         }
 
         val totalWeight = weights.sum()
+
         var allocated = 0L
 
         return sessions.mapIndexed { index, session ->
 
             val count = if (index == sessions.lastIndex) {
+
                 totalSteps - allocated
+
             } else {
-                (totalSteps * weights[index] / totalWeight).roundToLong()
+
+                (totalSteps * weights[index] / totalWeight)
+                    .roundToLong()
                     .coerceAtLeast(1)
             }
 
@@ -389,7 +513,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------
-    // AUTOMATIC STEP SPLITTING
+    // AUTOMATIC STEP INSERTION
     // ---------------------------------------------------------
 
     private fun writeStepsAutomatically() {
@@ -400,6 +524,15 @@ class MainActivity : AppCompatActivity() {
 
         if (requestedSteps == null || requestedSteps <= 0) {
             setStatus("Enter a valid step count")
+            return
+        }
+
+        // Validate selected date
+        val date = selectedDate
+        val today = LocalDate.now()
+
+        if (date.isAfter(today)) {
+            setStatus("Future dates are not allowed")
             return
         }
 
@@ -419,6 +552,7 @@ class MainActivity : AppCompatActivity() {
             )
 
         } catch (e: Exception) {
+
             setStatus("Enter time in HH:mm format, e.g. 07:00")
             return
         }
@@ -429,16 +563,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         val zone = ZoneId.systemDefault()
-        val today = LocalDate.now()
 
-        val requestedStart = today.atTime(startTime)
+        val requestedStart = date
+            .atTime(startTime)
             .atZone(zone)
             .toInstant()
 
-        val requestedEnd = today.atTime(endTime)
+        val requestedEnd = date
+            .atTime(endTime)
             .atZone(zone)
             .toInstant()
 
+        // Future-time validation for current date
         if (requestedEnd.isAfter(Instant.now())) {
             setStatus("End time cannot be in the future")
             return
@@ -457,20 +593,29 @@ class MainActivity : AppCompatActivity() {
 
                 setStatus("Checking existing records...")
 
-                val existingRecords = getTodayStepRecords()
+                val existingRecords = getSelectedDateStepRecords()
 
-                val relevantRecords = existingRecords.filter { record ->
-                    record.startTime.isBefore(requestedEnd) &&
-                        record.endTime.isAfter(requestedStart)
-                }.sortedBy { it.startTime }
+                val relevantRecords = existingRecords
+                    .filter { record ->
+                        record.startTime.isBefore(requestedEnd) &&
+                            record.endTime.isAfter(requestedStart)
+                    }
+                    .sortedBy { it.startTime }
 
-                // Calculate existing steps in the requested interval.
+                // Calculate existing steps in the requested interval
                 var existingSteps = 0L
 
                 for (record in relevantRecords) {
 
-                    val overlapStart = maxOf(record.startTime, requestedStart)
-                    val overlapEnd = minOf(record.endTime, requestedEnd)
+                    val overlapStart = maxOf(
+                        record.startTime,
+                        requestedStart
+                    )
+
+                    val overlapEnd = minOf(
+                        record.endTime,
+                        requestedEnd
+                    )
 
                     val overlapDuration = ChronoUnit.MILLIS.between(
                         overlapStart,
@@ -482,7 +627,9 @@ class MainActivity : AppCompatActivity() {
                         record.endTime
                     )
 
-                    if (recordDuration <= 0 || overlapDuration <= 0) continue
+                    if (recordDuration <= 0 || overlapDuration <= 0) {
+                        continue
+                    }
 
                     val stepsInOverlap = (
                         record.count.toDouble() *
@@ -500,8 +647,11 @@ class MainActivity : AppCompatActivity() {
                     setStatus(
                         """
                         No new records created.
+
+                        Selected date: $date
                         Requested steps: $requestedSteps
                         Existing steps: $existingSteps
+
                         Existing steps already meet or exceed your target.
                         """.trimIndent()
                     )
@@ -510,7 +660,7 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
 
-                // Find uncovered intervals.
+                // Find uncovered intervals
                 val gaps = findUncoveredIntervals(
                     requestedStart,
                     requestedEnd,
@@ -531,8 +681,10 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
 
-                // Distribute remaining steps between uncovered intervals.
-                val intervalAllocations = mutableListOf<Pair<Pair<Instant, Instant>, Long>>()
+                // Distribute remaining steps between uncovered intervals
+                val intervalAllocations =
+                    mutableListOf<Pair<Pair<Instant, Instant>, Long>>()
+
                 var allocatedSteps = 0L
 
                 gaps.forEachIndexed { index, gap ->
@@ -543,8 +695,11 @@ class MainActivity : AppCompatActivity() {
                     )
 
                     val stepsForGap = if (index == gaps.lastIndex) {
+
                         remainingSteps - allocatedSteps
+
                     } else {
+
                         (
                             remainingSteps.toDouble() *
                                 duration.toDouble() /
@@ -553,6 +708,7 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     allocatedSteps += stepsForGap
+
                     intervalAllocations.add(gap to stepsForGap)
                 }
 
@@ -564,7 +720,7 @@ class MainActivity : AppCompatActivity() {
 
                 val recordsToInsert = mutableListOf<StepsRecord>()
 
-                // Break every uncovered interval into smaller sessions.
+                // Break uncovered intervals into smaller sessions
                 for ((interval, intervalSteps) in intervalAllocations) {
 
                     if (intervalSteps <= 0) continue
@@ -605,10 +761,13 @@ class MainActivity : AppCompatActivity() {
 
                     appendLine("Step sessions created successfully!")
                     appendLine()
+
+                    appendLine("Selected date: $date")
                     appendLine("Requested total: $requestedSteps")
                     appendLine("Existing steps: $existingSteps")
                     appendLine("New steps added: $insertedSteps")
                     appendLine("Sessions created: ${recordsToInsert.size}")
+
                     appendLine()
                     appendLine("New sessions:")
 
@@ -626,12 +785,17 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     appendLine()
-                    appendLine("Total estimated steps: ${existingSteps + insertedSteps}")
+
+                    appendLine(
+                        "Total estimated steps: ${existingSteps + insertedSteps}"
+                    )
+
                     appendLine()
                     appendLine("Recording method: 2 (Manual entry)")
                 }
 
                 setStatus(result)
+
                 refreshTotal()
 
             } catch (e: Exception) {
@@ -657,7 +821,11 @@ class MainActivity : AppCompatActivity() {
             val start = maxOf(record.startTime, requestedStart)
             val end = minOf(record.endTime, requestedEnd)
 
-            if (start.isBefore(end)) start to end else null
+            if (start.isBefore(end)) {
+                start to end
+            } else {
+                null
+            }
 
         }.sortedBy { it.first }
 
@@ -685,12 +853,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------
-    // REFRESH TODAY'S TOTAL
+    // REFRESH SELECTED DATE TOTAL
     // ---------------------------------------------------------
 
     private fun refreshTotal() {
 
         val hc = client ?: return
+
+        val date = selectedDate
+
+        if (date.isAfter(LocalDate.now())) {
+            setStatus("Future dates are not allowed")
+            return
+        }
 
         lifecycleScope.launch {
 
@@ -700,14 +875,16 @@ class MainActivity : AppCompatActivity() {
                     AggregateRequest(
                         metrics = setOf(StepsRecord.COUNT_TOTAL),
                         timeRangeFilter = TimeRangeFilter.between(
-                            startOfToday(),
-                            Instant.now()
+                            startOfDate(date),
+                            endOfSelectedDate(date)
                         )
                     )
                 )
 
                 val total = response[StepsRecord.COUNT_TOTAL] ?: 0L
-                totalView.text = "Today's steps: $total"
+
+                totalView.text =
+                    "Steps on ${date.format(dateFormatter)}: $total"
 
             } catch (e: Exception) {
                 setStatus("Total read failed: ${e.message}")
@@ -716,25 +893,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------
-    // DELETE THIS APP'S RECORDS ONLY
+    // DELETE SELECTED DATE APP RECORDS ONLY
     // ---------------------------------------------------------
 
     private fun deleteMySteps() {
 
         val hc = client ?: return setStatus("Health Connect unavailable")
 
+        val date = selectedDate
+
+        if (date.isAfter(LocalDate.now())) {
+            setStatus("Future dates are not allowed")
+            return
+        }
+
         lifecycleScope.launch {
 
             try {
 
-                val records = getTodayStepRecords()
+                val records = getSelectedDateStepRecords()
 
                 val myRecords = records.filter {
                     it.metadata.dataOrigin.packageName == packageName
                 }
 
                 if (myRecords.isEmpty()) {
-                    setStatus("No records written by this app today")
+                    setStatus("No records written by this app on selected date")
                     return@launch
                 }
 
@@ -744,7 +928,10 @@ class MainActivity : AppCompatActivity() {
                     clientRecordIdsList = emptyList()
                 )
 
-                setStatus("Deleted ${myRecords.size} records written by this app")
+                setStatus(
+                    "Deleted ${myRecords.size} records written by this app on $date"
+                )
+
                 refreshTotal()
 
             } catch (e: Exception) {
@@ -756,13 +943,6 @@ class MainActivity : AppCompatActivity() {
     // ---------------------------------------------------------
     // HELPERS
     // ---------------------------------------------------------
-
-    private fun startOfToday(): Instant {
-
-        return LocalDate.now()
-            .atStartOfDay(ZoneId.systemDefault())
-            .toInstant()
-    }
 
     private fun setStatus(message: String) {
         statusView.text = message
